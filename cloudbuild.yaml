@@ -1,0 +1,60 @@
+steps:
+  - name: docker.io/moby/buildkit:master
+    id: buildkit
+    volumes:
+      - name: 'oci-image'
+        path: '/tmp'
+    env:
+    - 'BUILDCTL_FLAGS=--frontend=dockerfile.v0 --opt=build-arg:GOLANG_VERSION=1.13 --opt=build-arg:ALPINE_VERSION=3.11 --opt=filename=Dockerfile --local=context=. --local=dockerfile=.'
+    entrypoint: 'sh'
+    args:
+    - '-c'
+    - |
+      _CUE_REVISION=$(wget -qO - 'https://cue.googlesource.com/cue/+refs/heads/master?format=TEXT' | cut -d' ' -f1) && \
+      echo $$_CUE_REVISION && \
+      /usr/bin/buildctl-daemonless.sh build \
+        $$BUILDCTL_FLAGS \
+        --opt=target=cue \
+        --import-cache type=registry,ref=gcr.io/$PROJECT_ID/cue \
+        --output type=docker,name=gcr.io/$PROJECT_ID/cue:$$_CUE_REVISION > /tmp/latest.tar && \
+      \
+      /usr/bin/buildctl-daemonless.sh build \
+        $$BUILDCTL_FLAGS \
+        --opt=target=cue-debug \
+        --output type=docker,name=gcr.io/$PROJECT_ID/cue:$$_CUE_REVISION-debug > /tmp/debug.tar
+
+  - name: docker.io/docker:19.03
+    id: latest
+    volumes:
+      - name: 'oci-image'
+        path: '/tmp'
+    waitFor:
+    - buildkit
+    entrypoint: 'sh'
+    args:
+    - '-c'
+    - |
+      cat /tmp/latest.tar | docker image load && \
+      _TAG=$(docker image ls --filter=reference=gcr.io/$PROJECT_ID/cue --format='{{.Tag}}') && \
+      docker image push gcr.io/$PROJECT_ID/cue:$$_TAG && \
+      docker image tag gcr.io/$PROJECT_ID/cue:$$_TAG gcr.io/$PROJECT_ID/cue:latest
+
+  - name: docker.io/docker:19.03
+    id: debug
+    volumes:
+      - name: 'oci-image'
+        path: '/tmp'
+    waitFor:
+    - buildkit
+    entrypoint: 'sh'
+    args:
+    - '-c'
+    - |
+      cat /tmp/debug.tar | docker image load && \
+      _TAG=$(docker image ls --filter='reference=gcr.io/$PROJECT_ID/cue:*-debug' --format='{{.Tag}}') && \
+      docker image push gcr.io/$PROJECT_ID/cue:$$_TAG && \
+      docker image tag gcr.io/$PROJECT_ID/cue:$$_TAG gcr.io/$PROJECT_ID/cue:debug
+
+images:
+  - gcr.io/$PROJECT_ID/cue:latest
+  - gcr.io/$PROJECT_ID/cue:debug
